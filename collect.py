@@ -45,6 +45,7 @@ from carla09x.agent import HumanAgent, ForwardAgent, CommandFollower, LaneFollow
 import modules.data_writer as writer
 from modules.noiser import Noiser
 from modules.collision_checker import CollisionChecker
+from ego_vehicle import EgoVehicle
 
 WINDOW_WIDTH = 800
 WINDOW_HEIGHT = 600
@@ -108,7 +109,7 @@ def add_vehicles(client, num_actors, ego_vehicle_type='vehicle.tesla.model3'):
 
     spawn_points = world.get_map().get_spawn_points()
     number_of_spawn_points = len(spawn_points)
-    logging.info("max spawn points: {0}".format(number_of_spawn_points))
+    logging.info("requested actors: {0}, max spawn points: {1}".format(num_actors, number_of_spawn_points))
     if num_actors < number_of_spawn_points:
         random.shuffle(spawn_points)
     elif num_actors > number_of_spawn_points:
@@ -140,12 +141,6 @@ def add_vehicles(client, num_actors, ego_vehicle_type='vehicle.tesla.model3'):
             logging.error(response.error)
         else:
             actor_list.append(response.actor_id)
-
-    print('spawned %d vehicles, press Ctrl+C to exit.' % len(actor_list))
-
-    while True:
-        world.wait_for_tick()
-
 
 def add_actors(client, num_actors, str_actor_type="walker.pedestrian.*"):
     # 0. Choose a blueprint fo the walkers
@@ -212,12 +207,14 @@ def add_actors(client, num_actors, str_actor_type="walker.pedestrian.*"):
         all_actors[i].set_max_speed(1 + random.random())  # max speed between 1 and 2 (default is 1.4 m/s)
 
 def start_episode(client, position):
-    world = client.get_world()
-    blueprint_library = world.get_blueprint_library()
-    player = blueprint_library.filter("model3")[0]
-    transform = random.choice(world.get_map().get_spawn_points())
-    vehicle = world.spawn_actor(player, transform)
-    return vehicle.get_location()
+    # world = client.get_world()
+    # blueprint_library = world.get_blueprint_library()
+    # player_bp = blueprint_library.filter("model3")[0]
+    # player_bp.set_attribute('role_name', 'ego')
+    # transform = random.choice(world.get_map().get_spawn_points())
+    # vehicle = world.spawn_actor(player_bp, transform)
+    vehicle = EgoVehicle(client).get_vehicle()
+    return vehicle
 
 def find_weather_presets():
     rgx = re.compile('.+?(?:(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|$)')
@@ -264,12 +261,18 @@ def new_episode(client, carla_settings, position, vehicle_pair, pedestrian_pair,
     #load settings here - new episode
     logging.info("Start new episode")
 
-    player_start_position = start_episode(client, position)
-    world = client.get_world()
+    vehicle = start_episode(client, position) # the vehicle is the player vehicle
+    # player_start_position = vehicle.get_location()
+    player_start_spots = world.get_map().get_spawn_points()
     map_name = world.get_map().name
 
+    logging.info("set spectator")
+    spectator = world.get_spectator()
+    spectator_tf = vehicle.get_transform()
+    # spectator_tf.z += 5.0
+    spectator.set_transform(spectator_tf)
 
-    return map_name, player_start_position, weather, number_of_vehicles, number_of_pedestrians, \
+    return map_name, vehicle, player_start_spots, weather, number_of_vehicles, number_of_pedestrians, \
            carla_settings.SeedVehicles, carla_settings.SeedPedestrians
 
 
@@ -291,13 +294,26 @@ def reach_timeout(current_time, timeout_period):
 
     return False
 
+from math import cos, sin, tan
+def get_orientation(transform):
+    pitch = transform.rotation.pitch
+    yaw = transform.rotation.yaw
+    xzLen = cos(pitch)
+    x = xzLen * cos(yaw)
+    y = sin(pitch)
+    z = xzLen * sin(-yaw)
+    return x,y,z
 
 def calculate_timeout(start_point, end_point, planner):
+    # TODO: orientation is deprecated for carla 0.9.x, need to transform rotation to orientation
+    # https://stackoverflow.com/questions/10569659/camera-pitch-yaw-to-direction-vector
+    start_point_ori_x, start_point_ori_y, start_point_ori_z = get_orientation(start_point)
+    end_point_ori_x, end_point_ori_y, end_point_ori_z = get_orientation(end_point)
     path_distance = planner.get_shortest_path_distance(
         [start_point.location.x, start_point.location.y, 0.22], [
-            start_point.orientation.x, start_point.orientation.y, 0.22], [
+            start_point_ori_x, start_point_ori_y, 0.22], [
             end_point.location.x, end_point.location.y, end_point.location.z], [
-            end_point.orientation.x, end_point.orientation.y, end_point.orientation.z])
+            end_point_ori_x, end_point_ori_y, end_point_ori_z])
 
     return ((path_distance / 1000.0) / 5.0) * 3600.0 + 10.0
 
@@ -306,7 +322,7 @@ def reset_episode(client, carla_game, settings_module, show_render):
 
     random_pose = random.choice(settings_module.POSITIONS)
     logging.info("get new episode")
-    town_name, player_start_spots, weather, number_of_vehicles, number_of_pedestrians, \
+    town_name, vehicle, player_start_spots, weather, number_of_vehicles, number_of_pedestrians, \
         seeds_vehicles, seeds_pedestrians = new_episode(client,
                                                         settings_module.make_carla_settings(),
                                                         random_pose[0],
@@ -323,16 +339,21 @@ def reset_episode(client, carla_game, settings_module, show_render):
     logging.info("add planner")
     planner = Planner(town_name)
 
+    logging.info("set objective")
+    ## TODO: fix player start spots with possible locations
     carla_game.set_objective(player_start_spots[random_pose[1]])
 
+    logging.info("get player target transform")
     player_target_transform = player_start_spots[random_pose[1]]
 
     last_episode_time = time.time()
 
-    timeout = calculate_timeout(player_start_spots[random_pose[0]],
+    timeout = calculate_timeout(vehicle.get_transform(),
                                 player_target_transform, planner)
+    logging.info("calculate timeout: {0}", timeout)
     episode_characteristics = {
         "town_name": town_name,
+        "player_vehicle": vehicle,
         "player_target_transform": player_target_transform,
         "last_episode_time": last_episode_time,
         "timeout": timeout,
@@ -421,12 +442,15 @@ def collect(client, args):
     writer.make_dataset_path(args.data_path)
     # We start by writing the  metadata for the entire data collection process.
     # That basically involves writing the configuration that was set on the settings module.
+    logging.info("add metadata")
     writer.add_metadata(args.data_path, settings_module)
+    logging.info("add episode metadata")
     # Also write the metadata for the current episode
     writer.add_episode_metadata(args.data_path, str(args.episode_number).zfill(5),
                                 episode_aspects)
 
     # We start the episode number with the one set as parameter
+    logging.info("We start the episode number with the one set as parameter")
     episode_number = args.episode_number
     try:
         image_count = 0
@@ -436,6 +460,7 @@ def collect(client, args):
         while carla_game.is_running() and episode_number < maximun_episode:
 
             # we add the vehicle and the connection outside of the game.
+            # TODO: need to change client.read_data() to 0.9.x interface
             measurements, sensor_data = client.read_data()
 
             # run a step for the agent. regardless of the type
