@@ -7,33 +7,32 @@
 # For a copy, see <https://opensource.org/licenses/MIT>.
 
 
-
-
 from __future__ import print_function
 
-import os
-import sys
 import argparse
 import logging
 import random
-import time
 import re
+import time
+import traceback
 
 try:
     import sys
     import glob
     import os
+
     sys.path.append(glob.glob('/home/jhshin/Sources/carla/PythonAPI/carla/dist/carla-0.9.9-py3.7-linux-x86_64.egg')[0])
     import carla
 except IndexError:
     print('unable to import carla library')
     pass
 
-
 try:
     import numpy as np
 except ImportError:
     raise RuntimeError('cannot import numpy, make sure numpy package is installed')
+
+import pygame
 
 from carla09x.client import make_carla_client
 
@@ -44,7 +43,6 @@ from carla09x.agent import HumanAgent, ForwardAgent, CommandFollower, LaneFollow
 
 import modules.data_writer as writer
 from modules.noiser import Noiser
-from modules.collision_checker import CollisionChecker
 from ego_vehicle import EgoVehicle
 
 WINDOW_WIDTH = 800
@@ -76,26 +74,28 @@ def make_controlling_agent(args, town_name):
         raise ValueError("Selected Agent Does not exist")
 
 
-def get_directions(measurements, target_transform, planner):
+def get_directions(current_point, target_transform, planner):
     """ Function to get the high level commands and the waypoints.
         The waypoints correspond to the local planning, the near path the car has to follow.
     """
 
     # Get the current position from the measurements
-    current_point = measurements.player_measurements.transform
-
+    start_point_ori_x, start_point_ori_y, start_point_ori_z = get_orientation(current_point)
+    target_point_ori_x, target_point_ori_y, target_point_ori_z = get_orientation(target_transform)
     directions = planner.get_next_command(
         (current_point.location.x,
          current_point.location.y, 0.22),
-        (current_point.orientation.x,
-         current_point.orientation.y,
-         current_point.orientation.z),
+        (start_point_ori_x,
+         start_point_ori_y,
+         start_point_ori_z),
         (target_transform.location.x, target_transform.location.y, 0.22),
-        (target_transform.orientation.x, target_transform.orientation.y,
-         target_transform.orientation.z)
+        (target_point_ori_x,
+         target_point_ori_y,
+         target_point_ori_z)
     )
 
     return directions
+
 
 def add_vehicles(client, num_actors, ego_vehicle_type='vehicle.tesla.model3'):
     actor_list = []
@@ -142,6 +142,7 @@ def add_vehicles(client, num_actors, ego_vehicle_type='vehicle.tesla.model3'):
         else:
             actor_list.append(response.actor_id)
 
+
 def add_actors(client, num_actors, str_actor_type="walker.pedestrian.*"):
     # 0. Choose a blueprint fo the walkers
     world = client.get_world()
@@ -187,7 +188,7 @@ def add_actors(client, num_actors, str_actor_type="walker.pedestrian.*"):
         else:
             walkers_list[i]["con"] = results[i].actor_id
 
-    all_id=[]
+    all_id = []
     # 4. Put altogether the walker and controller ids
     for i in range(len(walkers_list)):
         all_id.append(walkers_list[i]["con"])
@@ -206,6 +207,7 @@ def add_actors(client, num_actors, str_actor_type="walker.pedestrian.*"):
         # random max speed
         all_actors[i].set_max_speed(1 + random.random())  # max speed between 1 and 2 (default is 1.4 m/s)
 
+
 def start_episode(client, position):
     # world = client.get_world()
     # blueprint_library = world.get_blueprint_library()
@@ -216,11 +218,13 @@ def start_episode(client, position):
     vehicle = EgoVehicle(client).get_vehicle()
     return vehicle
 
+
 def find_weather_presets():
     rgx = re.compile('.+?(?:(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|$)')
     name = lambda x: ' '.join(m.group(0) for m in rgx.finditer(x))
     presets = [x for x in dir(carla.WeatherParameters) if re.match('[A-Z].+', x)]
     return [(getattr(carla.WeatherParameters, x), name(x)) for x in presets]
+
 
 def new_episode(client, carla_settings, position, vehicle_pair, pedestrian_pair, set_of_weathers):
     """
@@ -247,21 +251,23 @@ def new_episode(client, carla_settings, position, vehicle_pair, pedestrian_pair,
 
     client.reload_world()
 
+    # https://github.com/carla-simulator/carla/issues/1669
     world = client.get_world()
+
     logging.info(weather)
     world.set_weather(weather[0])
     logging.info(world.get_weather())
     # load settings here - pedestrians
     logging.info("add actors")
     add_actors(client, number_of_pedestrians, str_actor_type="walker.pedestrian.*")
-    #load settings here - vehicles
+    # load settings here - vehicles
     add_vehicles(client, number_of_vehicles)
     # scene = client.load_settings(carla_settings)
 
-    #load settings here - new episode
+    # load settings here - new episode
     logging.info("Start new episode")
 
-    vehicle = start_episode(client, position) # the vehicle is the player vehicle
+    vehicle = start_episode(client, position)  # the vehicle is the player vehicle
     # player_start_position = vehicle.get_location()
     player_start_spots = world.get_map().get_spawn_points()
     map_name = world.get_map().name
@@ -294,7 +300,10 @@ def reach_timeout(current_time, timeout_period):
 
     return False
 
-from math import cos, sin, tan
+
+from math import cos, sin
+
+
 def get_orientation(transform):
     pitch = transform.rotation.pitch
     yaw = transform.rotation.yaw
@@ -302,7 +311,8 @@ def get_orientation(transform):
     x = xzLen * cos(yaw)
     y = sin(pitch)
     z = xzLen * sin(-yaw)
-    return x,y,z
+    return x, y, z
+
 
 def calculate_timeout(start_point, end_point, planner):
     # TODO: orientation is deprecated for carla 0.9.x, need to transform rotation to orientation
@@ -319,16 +329,15 @@ def calculate_timeout(start_point, end_point, planner):
 
 
 def reset_episode(client, carla_game, settings_module, show_render):
-
     random_pose = random.choice(settings_module.POSITIONS)
     logging.info("get new episode")
     town_name, vehicle, player_start_spots, weather, number_of_vehicles, number_of_pedestrians, \
-        seeds_vehicles, seeds_pedestrians = new_episode(client,
-                                                        settings_module.make_carla_settings(),
-                                                        random_pose[0],
-                                                        settings_module.NumberOfVehicles,
-                                                        settings_module.NumberOfPedestrians,
-                                                        settings_module.set_of_weathers)
+    seeds_vehicles, seeds_pedestrians = new_episode(client,
+                                                    settings_module.make_carla_settings(),
+                                                    random_pose[0],
+                                                    settings_module.NumberOfVehicles,
+                                                    settings_module.NumberOfPedestrians,
+                                                    settings_module.set_of_weathers)
 
     logging.info("initialize game")
     # Here when verbose is activated we also show the rendering window.
@@ -409,13 +418,9 @@ def collect(client, args):
 
     # The collision checker , checks for collision at any moment.
     logging.info("Get Collision checker")
-    collision_checker = CollisionChecker()
+    # collision_checker = CollisionChecker()
     # TODO: add collision checker
-    # self.collision_sensor = None
-    # colhist = world.collision_sensor.get_collision_history()
-    # self.collision_sensor = CollisionSensor(self.player, self.hud)
-    # collision = [colhist[x + self.frame - 200] for x in range(0, 200)]
-    # collision = [x / max_col for x in collision]
+
     ##### Start the episode #####
     # ! This returns all the aspects from the episodes.
     logging.info("Start Episode")
@@ -424,6 +429,7 @@ def collect(client, args):
     logging.info("Planner for town")
     planner = Planner(episode_aspects["town_name"])
     # We instantiate the agent, depending on the parameter
+    # controlling_agent = make_controlling_agent(args, episode_aspects["town_name"])
     controlling_agent = make_controlling_agent(args, episode_aspects["town_name"])
 
     # The noise object to add noise to some episodes is instanced
@@ -452,109 +458,131 @@ def collect(client, args):
     # We start the episode number with the one set as parameter
     logging.info("We start the episode number with the one set as parameter")
     episode_number = args.episode_number
+    vehicle = episode_aspects['player_vehicle']
+    try:
+        world = client.get_world()
+        settings = world.get_settings()
+        settings.synchronous_mode = True
+        world.apply_settings(settings)
+    except:
+        traceback.print_exc()
+    #TODO: add screens using screen manager
+    pygame.init()
+    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
     try:
         image_count = 0
         # The maximum episode is equal to the current episode plus the number of episodes you
         # want to run
         maximun_episode = int(args.number_of_episodes) + int(args.episode_number)
         while carla_game.is_running() and episode_number < maximun_episode:
-
+            # logging.info("Alive count: {0}".format(image_count))
             # we add the vehicle and the connection outside of the game.
             # TODO: need to change client.read_data() to 0.9.x interface
-            measurements, sensor_data = client.read_data()
-
-            # run a step for the agent. regardless of the type
-            control, controller_state = controlling_agent.run_step(measurements,
-                                                       sensor_data,
-                                                       [],
-                                                       episode_aspects['player_target_transform'])
-            # Get the directions, also important to save those for future training
-
-            directions = get_directions(measurements,
-                                        episode_aspects['player_target_transform'], planner)
-
-            controller_state.update({'directions': directions})
-
-            # if this is a noisy episode, add noise to the controls
-            #TODO add a function here.
+            # measurements, sensor_data = client.read_data()
+            transform = vehicle.get_transform()
+            velocity = vehicle.get_velocity()
+            # transform.location
+            # velocity.
+            # TODO: apply other controlling agent
+            # # run a step for the agent. regardless of the type
+            # control, controller_state = controlling_agent.run_step(measurements,
+            #                                            sensor_data,
+            #                                            [],
+            #                                            episode_aspects['player_target_transform'])
+            logging.info("get run step")
+            control = controlling_agent.run_step()
+            logging.info(control)
+            # # Get the directions, also important to save those for future training
+            #
+            # directions = get_directions(transform, episode_aspects['player_target_transform'], planner)
+            #
+            # controller_state.update({'directions': directions})
+            #
+            # # if this is a noisy episode, add noise to the controls
+            # #TODO add a function here.
+            logging.info("adding noise")
             if episode_longitudinal_noise:
                 control_noise, _, _ = longitudinal_noiser.compute_noise(control,
-                                            measurements.player_measurements.forward_speed * 3.6)
+                                                                        velocity.x * 3.6)
             else:
                 control_noise = control
 
             if episode_lateral_noise:
                 control_noise_f, _, _ = lateral_noiser.compute_noise(control_noise,
-                                            measurements.player_measurements.forward_speed * 3.6)
+                                                                     velocity.x * 3.6)
             else:
                 control_noise_f = control_noise
-
-
-            # Set the player position
-            # if you want to debug also render everything
-            if args.debug:
-                objects_to_render = controller_state.copy()
-                objects_to_render['player_transform'] = measurements.player_measurements.transform
-                objects_to_render['agents'] = measurements.non_player_agents
-                objects_to_render["draw_pedestrians"] = args.draw_pedestrians
-                objects_to_render["draw_vehicles"] = args.draw_vehicles
-                objects_to_render["draw_traffic_lights"] = args.draw_traffic_lights
-                # Comment the following two lines to see the waypoints and routes.
-                objects_to_render['waypoints'] = None
-                objects_to_render['route'] = None
-
-                # Render with the provided map
-                carla_game.render(sensor_data['CameraRGB'], objects_to_render)
-
-            # Check two important conditions for the episode, if it has ended
-            # and if the episode was a success
-            episode_ended = collision_checker.test_collision(measurements.player_measurements) or \
-                            reach_timeout(measurements.game_timestamp / 1000.0,
-                                          episode_aspects["timeout"]) or \
-                            carla_game.is_reset(measurements.player_measurements.transform.location)
-            episode_success = not (collision_checker.test_collision(
-                                   measurements.player_measurements) or
-                                   reach_timeout(measurements.game_timestamp / 1000.0,
-                                                 episode_aspects["timeout"]))
-
-            # Check if there is collision
-            # Start a new episode if there is a collision but repeat the same by not incrementing
-            # episode number.
-
-            if episode_ended:
-                logging.info("the episode is ended.")
-                if episode_success:
-                    episode_number += 1
-                else:
-                    # If the episode did go well and we were recording, delete this episode
-                    if not args.not_record:
-                        writer.delete_episode(args.data_path, str(episode_number-1).zfill(5))
-
-                episode_lateral_noise, episode_longitudinal_noise = check_episode_has_noise(
-                    settings_module.lat_noise_percent,
-                    settings_module.long_noise_percent)
-
-                # We reset the episode and receive all the characteristics of this episode.
-                episode_aspects = reset_episode(client, carla_game,
-                                                settings_module, args.debug)
-
-                writer.add_episode_metadata(args.data_path, str(episode_number).zfill(5),
-                                            episode_aspects)
-
-                # Reset the image count
-                image_count = 0
-
-            # We do this to avoid the frames that the car is coming from the sky.
-            if image_count >= NUMBER_OF_FRAMES_CAR_FLIES and not args.not_record:
-                writer.add_data_point(measurements, control, control_noise_f, sensor_data,
-                                      controller_state,
-                                      args.data_path, str(episode_number).zfill(5),
-                                      str(image_count - NUMBER_OF_FRAMES_CAR_FLIES),
-                                      settings_module.sensors_frequency)
-            # End the loop by sending control
-            client.send_control(control_noise_f)
+            #
+            #
+            # # Set the player position
+            # # if you want to debug also render everything
+            # if args.debug:
+            #     objects_to_render = controller_state.copy()
+            #     objects_to_render['player_transform'] = measurements.player_measurements.transform
+            #     objects_to_render['agents'] = measurements.non_player_agents
+            #     objects_to_render["draw_pedestrians"] = args.draw_pedestrians
+            #     objects_to_render["draw_vehicles"] = args.draw_vehicles
+            #     objects_to_render["draw_traffic_lights"] = args.draw_traffic_lights
+            #     # Comment the following two lines to see the waypoints and routes.
+            #     objects_to_render['waypoints'] = None
+            #     objects_to_render['route'] = None
+            #
+            #     # Render with the provided map
+            #     carla_game.render(sensor_data['CameraRGB'], objects_to_render)
+            #
+            # # Check two important conditions for the episode, if it has ended
+            # # and if the episode was a success
+            # TODO: implement collision_check behavior
+            # episode_ended = collision_checker.test_collision(measurements.player_measurements) or \
+            #                 reach_timeout(measurements.game_timestamp / 1000.0,
+            #                               episode_aspects["timeout"]) or \
+            #                 carla_game.is_reset(measurements.player_measurements.transform.location)
+            # episode_success = not (collision_checker.test_collision(
+            #                        measurements.player_measurements) or
+            #                        reach_timeout(measurements.game_timestamp / 1000.0,
+            #                                      episode_aspects["timeout"]))
+            #
+            # # Check if there is collision
+            # # Start a new episode if there is a collision but repeat the same by not incrementing
+            # # episode number.
+            #
+            # if episode_ended:
+            #     logging.info("the episode is ended.")
+            #     if episode_success:
+            #         episode_number += 1
+            #     else:
+            #         # If the episode did go well and we were recording, delete this episode
+            #         if not args.not_record:
+            #             writer.delete_episode(args.data_path, str(episode_number-1).zfill(5))
+            #
+            #     episode_lateral_noise, episode_longitudinal_noise = check_episode_has_noise(
+            #         settings_module.lat_noise_percent,
+            #         settings_module.long_noise_percent)
+            #
+            #     # We reset the episode and receive all the characteristics of this episode.
+            #     episode_aspects = reset_episode(client, carla_game,
+            #                                     settings_module, args.debug)
+            #
+            #     writer.add_episode_metadata(args.data_path, str(episode_number).zfill(5),
+            #                                 episode_aspects)
+            #
+            #     # Reset the image count
+            #     image_count = 0
+            #
+            # # We do this to avoid the frames that the car is coming from the sky.
+            # if image_count >= NUMBER_OF_FRAMES_CAR_FLIES and not args.not_record:
+            #     writer.add_data_point(measurements, control, control_noise_f, sensor_data,
+            #                           controller_state,
+            #                           args.data_path, str(episode_number).zfill(5),
+            #                           str(image_count - NUMBER_OF_FRAMES_CAR_FLIES),
+            #                           settings_module.sensors_frequency)
+            # # End the loop by sending control
+            # client.send_control(control_noise_f)
+            logging.info("applying vehicle control")
+            vehicle.apply_control(control_noise_f)
             # Add one more image to the counting
             image_count += 1
+            world.tick()
 
     except TCPConnectionError as error:
         """
@@ -599,7 +627,7 @@ def main():
         type=int,
         help='TCP port to listen to (default: 2000)')
     argparser.add_argument(
-        '-pt','--data-path',
+        '-pt', '--data-path',
         metavar='H',
         default='.',
         dest='data_path',
