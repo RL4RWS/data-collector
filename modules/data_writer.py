@@ -72,7 +72,7 @@ def add_episode_metadata(dataset_path, episode_number, episode_aspects):
         jsonObj.update({'number_of_vehicles': episode_aspects['number_of_vehicles']})
         jsonObj.update({'seeds_pedestrians': episode_aspects['seeds_pedestrians']})
         jsonObj.update({'seeds_vehicles': episode_aspects['seeds_vehicles']})
-        jsonObj.update({'weather': episode_aspects['weather']})
+        jsonObj.update({'weather': episode_aspects['weather'][1]})
         fo.write(json.dumps(jsonObj, sort_keys=True, indent=4))
 
 

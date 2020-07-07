@@ -1,5 +1,15 @@
-from carla09x.agent.agent import Agent
-from carla09x.client import VehicleControl
+# from carla09x.agent.agent import Agent
+# from carla09x.client import VehicleControl
+
+try:
+    import sys
+    import glob
+    import os
+    sys.path.append(glob.glob('/home/jhshin/Sources/carla/PythonAPI/carla/dist/carla-0.9.9-py3.7-linux-x86_64.egg')[0])
+    import carla
+except IndexError:
+    print('unable to import carla library')
+    pass
 
 try:
     import pygame
@@ -18,7 +28,7 @@ except ImportError:
     raise RuntimeError('cannot import pygame, make sure pygame package is installed')
 
 
-class HumanAgent(Agent):
+class HumanAgent:
     """
     Derivation of Agent Class for human control,
 
@@ -28,7 +38,8 @@ class HumanAgent(Agent):
         """
          TODO: add the parameter for a joystick to be used, default keyboard.
         """
-        super(HumanAgent).__init__()
+        # super(HumanAgent).__init__()
+        # pygame.init()
         self._is_on_reverse = False
 
     def _get_keyboard_control(self, keys):
@@ -39,7 +50,7 @@ class HumanAgent(Agent):
         if a new episode was requested.
         """
 
-        control = VehicleControl()
+        control = carla.VehicleControl()
         if keys[K_LEFT] or keys[K_a]:
             control.steer = -1.0
         if keys[K_RIGHT] or keys[K_d]:
@@ -55,10 +66,9 @@ class HumanAgent(Agent):
         control.reverse = self._is_on_reverse
         return control
 
-    def run_step(self, measurements, sensor_data, directions, target):
+    def run_step(self):
         # We basically ignore all the parameters.
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                return VehicleControl()
-
+                return carla.VehicleControl()
         return self._get_keyboard_control(pygame.key.get_pressed())
