@@ -15,20 +15,36 @@ import weakref
 
 class EgoVehicle:
     def __init__(self, client):
+        self.client = client
         world = client.get_world()
         blueprint_library = world.get_blueprint_library()
         player_bp = blueprint_library.filter("model3")[0]
         player_bp.set_attribute('role_name', 'ego')
-        transform = random.choice(world.get_map().get_spawn_points())
-        vehicle = world.spawn_actor(player_bp, transform)
+        is_spawned = 0
+        while(is_spawned == 0):
+            try:
+                transform = random.choice(world.get_map().get_spawn_points())
+                vehicle = world.spawn_actor(player_bp, transform)
+                is_spawned = 1
+            except:
+                is_spawned = 0
         self.vehicle = vehicle
-        self.collision_sensor = CollisionSensor(self.vehicle)
+        self.collision_sensor = ''
 
     def get_vehicle(self):
         return self.vehicle
 
     def get_collision_sensor(self):
         return self.collision_sensor
+
+    def attach_collision_sensor(self):
+        self.collision_sensor = CollisionSensor(self.vehicle)
+        return self.collision_sensor
+
+    def destroy(self):
+        self.collision_sensor.destroy()
+        self.vehicle.destroy()
+        return
 
 # # ==============================================================================
 # # -- CollisionSensor -----------------------------------------------------------
@@ -51,11 +67,14 @@ class CollisionSensor(object):
         weak_self = weakref.ref(self)
         self.sensor.listen(lambda event: CollisionSensor._on_collision(weak_self, event))
 
+    def destroy(self):
+        self.sensor.destroy()
+        return
+
     def get_collision_history(self):
-        history = defaultdict(int)
+        history = defaultdict(list)
         for frame, intensity, actor_type in self.history:
-            history[frame] += intensity
-            history[frame] += actor_type
+            history[frame] = [intensity, actor_type]
         return history
 
     @staticmethod

@@ -18,6 +18,7 @@ except IndexError:
     pass
 
 import logging
+import traceback
 
 @contextmanager
 def make_connection(client_type, *args, **kwargs):
@@ -26,12 +27,16 @@ def make_connection(client_type, *args, **kwargs):
     try:
         # client = client_type(*args, **kwargs)
         client = carla.Client(*args)
+        client.set_timeout(10000.0)
         logging.info("get client type")
         # client.connect()
         yield client
     finally:
-        if client is not None:
-            client.disconnect()
+        try:
+            if client is not None:
+                client.disconnect()
+        except:
+            traceback.print_exc()
 
 
 class StopWatch(object):
